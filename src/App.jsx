@@ -11,7 +11,7 @@ function App() {
   return (
     <>
       <Helmet>
-        <title>The Funny Awards 2026 - Celebrating the Funniest in Comedy</title>
+        <title>The Funnys</title>
         <meta 
           name="description" 
           content="The Funny Awards 2026 honors the funniest in comedy across film, TV, stage, and digital. Join us for the biggest night in funny." 
