@@ -678,16 +678,19 @@ const AwardCategoriesGrid = () => {
                           </div>
 
                           <div className="mt-6 md:mt-8">
-                            <h4 className="font-sans font-semibold text-dark text-sm md:text-base mb-3">
-                              Nominees
-                            </h4>
+                          <h4 className="font-sans text-dark mb-3">
+                            <span className="font-semibold text-base md:text-lg">Nominees</span>{' '}
+                            <span className="font-normal text-sm md:text-base">
+                              (in no particular order)
+                            </span>
+                          </h4>
 
                             {!nomineesLoaded ? (
                               <p className="text-dark/60 italic">Loading nominees...</p>
                             ) : nominees.length === 0 ? (
                               <p className="text-dark/60 italic">No nominees found for this category.</p>
                             ) : (
-                              <ol className="space-y-4">
+                              <ul className="space-y-4">
                                 {nominees.map((n, idx) => {
                                   const s = stateFor(expandedCategory.id);
                                   const open = Boolean(s.mediaOpen?.[idx]);
@@ -696,9 +699,9 @@ const AwardCategoriesGrid = () => {
                                   return (
                                     <li key={n.id || idx} className="text-dark">
                                       <div className="flex items-start justify-between gap-4">
-                                        <div className="text-sm md:text-base">
-                                          <span className="font-semibold">{idx + 1}.</span> {n.name}
-                                        </div>
+                                      <div className="text-sm md:text-base">
+                                        {n.name}
+                                      </div>
 
                                         {hasAnyMedia && (
                                           <button
@@ -744,7 +747,7 @@ const AwardCategoriesGrid = () => {
                                     </li>
                                   );
                                 })}
-                              </ol>
+                              </ul>
                             )}
                           </div>
 
