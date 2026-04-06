@@ -93,7 +93,7 @@ const AwardCategoriesGrid = () => {
       try {
         const { data, error } = await supabase
           .from('award_categories')
-          .select('id, title, award_id, year, display_order')
+          .select('id, title, award_id, year, display_order, status')
           .eq('year', CURRENT_YEAR)
           .order('display_order', { ascending: true });
 
@@ -103,6 +103,7 @@ const AwardCategoriesGrid = () => {
           id: record.id,
           title: record.title,
           awardId: record.award_id,
+          status: record.status,
           icon: getAwardIcon(record.award_id) || Star
         }));
 
@@ -124,7 +125,7 @@ const AwardCategoriesGrid = () => {
       try {
         const { data, error } = await supabase
           .from('nominees')
-          .select('id, category_id, name, year, media_url, sort_order')
+          .select('id, category_id, name, year, media_url, sort_order, is_winner')
           .eq('category_id', activeId)
           .eq('year', CURRENT_YEAR)
           .order('sort_order', { ascending: true });
@@ -167,6 +168,12 @@ const AwardCategoriesGrid = () => {
 
   const nominees = activeId ? nomineesByCategory[activeId] || [] : [];
   const nomineesLoaded = activeId ? Boolean(loadedNomineesByCategory[activeId]) : false;
+  
+  const categoryStatus = expandedCategory?.status || 'open';
+  const isVotingOpen = categoryStatus === 'open';
+  const isVotingClosed = categoryStatus === 'closed';
+  const isWinnerAnnounced = categoryStatus === 'winner_announced';
+  const winningNominee = nominees.find((n) => n.is_winner) || null;
 
   const activeIndex = useMemo(() => {
     if (!activeId) return -1;
@@ -461,6 +468,65 @@ const AwardCategoriesGrid = () => {
     }
   };
 
+  const submitSubscription = async (catId) => {
+    const s = stateFor(catId);
+    const email = normalizeEmail(s.email);
+    const sourceStatus = categories.find((c) => c.id === catId)?.status;
+  
+    if (!isValidEmail(email)) {
+      setStateFor(catId, { error: 'Please enter a valid email address.' });
+      return;
+    }
+  
+    if (!sourceStatus || !['closed', 'winner_announced'].includes(sourceStatus)) {
+      setStateFor(catId, { error: 'This category is not accepting subscriptions right now.' });
+      return;
+    }
+  
+    setStateFor(catId, { error: '', isSubmitting: true });
+  
+    try {
+      const { error } = await supabase.from('award_subscribers').insert([
+        {
+          email,
+          source_status: sourceStatus,
+          category_id: catId,
+          year: CURRENT_YEAR
+        }
+      ]);
+  
+      if (error) {
+        const duplicateLike =
+          error.code === '23505' ||
+          String(error.message || '').toLowerCase().includes('duplicate') ||
+          String(error.message || '').toLowerCase().includes('unique');
+  
+        if (duplicateLike) {
+          setStateFor(catId, {
+            isSubmitting: false,
+            hasConfirmed: true,
+            error: ''
+          });
+          return;
+        }
+  
+        throw error;
+      }
+  
+      setStateFor(catId, {
+        isSubmitting: false,
+        hasConfirmed: true,
+        error: ''
+      });
+    } catch (err) {
+      console.error('Subscription submission error:', err);
+      setStateFor(catId, {
+        isSubmitting: false,
+        error: err.message || 'An error occurred while subscribing. Please try again.'
+      });
+    }
+  };
+
   return (
     <section id="categories" className="bg-dark pt-16 md:pt-20 pb-4 md:pb-10 px-6 scroll-mt-20">
       <AnimatePresence>
@@ -510,7 +576,7 @@ const AwardCategoriesGrid = () => {
             mb-10 md:mb-14
           "
         >
-          Click into each category to view this year’s nominees and cast your vote.
+          Click into each category to view the winners and nominees of the 2026 Funny Awards.
         </motion.h3>
 
         <div className="relative z-30" ref={gridRef}>
@@ -584,7 +650,7 @@ const AwardCategoriesGrid = () => {
                 }}
                 role="dialog"
                 aria-modal="true"
-                aria-label={`${expandedCategory.title} voting dialog`}
+                aria-label={`${expandedCategory.title} category dialog`}
                 tabIndex={-1}
                 ref={dialogRef}
               >
@@ -678,11 +744,8 @@ const AwardCategoriesGrid = () => {
                           </div>
 
                           <div className="mt-6 md:mt-8">
-                          <h4 className="font-sans text-dark mb-3">
-                            <span className="font-semibold text-base md:text-lg">Nominees</span>{' '}
-                            <span className="font-normal text-sm md:text-base">
-                              (in no particular order)
-                            </span>
+                          <h4 className="font-sans text-dark mb-3 text-sm md:text-base font-normal underline underline-offset-4 decoration-black/60">
+                            Nominees (in no particular order)
                           </h4>
 
                             {!nomineesLoaded ? (
@@ -699,8 +762,16 @@ const AwardCategoriesGrid = () => {
                                   return (
                                     <li key={n.id || idx} className="text-dark">
                                       <div className="flex items-start justify-between gap-4">
-                                      <div className="text-sm md:text-base">
+                                      <div className="flex items-center gap-2 text-sm md:text-base">
+                                      <span className={n.is_winner && isWinnerAnnounced ? 'font-bold' : ''}>
                                         {n.name}
+                                      </span>
+
+                                      {n.is_winner && isWinnerAnnounced && (
+                                        <span className="rounded-full bg-orange text-white px-2.5 py-0.5 text-[10px] md:text-[11px] font-bold uppercase tracking-[0.1em] leading-none">
+                                          Winner
+                                        </span>
+                                      )}
                                       </div>
 
                                         {hasAnyMedia && (
@@ -751,91 +822,209 @@ const AwardCategoriesGrid = () => {
                             )}
                           </div>
 
-                          <div className="mt-8 md:mt-10 pt-6 border-t border-black/10">
-                            <p className="text-dark font-sans font-medium mb-3">
-                              Enter your email to vote on this category!
-                            </p>
+                          {isVotingOpen && (
+                            <div className="mt-8 md:mt-10 pt-6 border-t border-black/10">
+                              <p className="text-dark font-sans font-medium mb-3">
+                                Enter your email to vote on this category!
+                              </p>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-                              <div>
-                                <label htmlFor="vote-email" className="block text-sm font-medium text-dark mb-2">
-                                  Email
-                                </label>
-                                <input
-                                  id="vote-email"
-                                  type="email"
-                                  placeholder="Enter your email"
-                                  value={stateFor(expandedCategory.id).email}
-                                  disabled={stateFor(expandedCategory.id).isSubmitting}
-                                  onChange={(e) => {
-                                    const nextEmail = e.target.value;
-                                    const s = stateFor(expandedCategory.id);
-                                    setStateFor(expandedCategory.id, {
-                                      email: nextEmail,
-                                      error: '',
-                                      hasConfirmed: s.hasConfirmed ? false : s.hasConfirmed
-                                    });
-                                  }}
-                                  className="
-                                    w-full rounded-lg border border-black/15
-                                    px-4 py-3
-                                    bg-white
-                                    text-dark
-                                    focus:outline-none focus:ring-2 focus:ring-orange
-                                    disabled:opacity-60
-                                  "
-                                />
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+                                <div>
+                                  <label htmlFor="vote-email" className="block text-sm font-medium text-dark mb-2">
+                                    Email
+                                  </label>
+                                  <input
+                                    id="vote-email"
+                                    type="email"
+                                    placeholder="Enter your email"
+                                    value={stateFor(expandedCategory.id).email}
+                                    disabled={stateFor(expandedCategory.id).isSubmitting}
+                                    onChange={(e) => {
+                                      const nextEmail = e.target.value;
+                                      const s = stateFor(expandedCategory.id);
+                                      setStateFor(expandedCategory.id, {
+                                        email: nextEmail,
+                                        error: '',
+                                        hasConfirmed: s.hasConfirmed ? false : s.hasConfirmed
+                                      });
+                                    }}
+                                    className="
+                                      w-full rounded-lg border border-black/15
+                                      px-4 py-3
+                                      bg-white
+                                      text-dark
+                                      focus:outline-none focus:ring-2 focus:ring-orange
+                                      disabled:opacity-60
+                                    "
+                                  />
+                                </div>
+
+                                <div>
+                                  <label htmlFor="vote-nominee" className="block text-sm font-medium text-dark mb-2">
+                                    Your Vote
+                                  </label>
+                                  <select
+                                    id="vote-nominee"
+                                    value={stateFor(expandedCategory.id).selection}
+                                    disabled={
+                                      stateFor(expandedCategory.id).isSubmitting ||
+                                      stateFor(expandedCategory.id).hasConfirmed
+                                    }
+                                    onChange={(e) => {
+                                      const nextSelection = e.target.value;
+                                      const s = stateFor(expandedCategory.id);
+                                      setStateFor(expandedCategory.id, {
+                                        selection: nextSelection,
+                                        error: '',
+                                        hasConfirmed: s.hasConfirmed ? false : s.hasConfirmed
+                                      });
+                                    }}
+                                    className="
+                                      w-full rounded-lg border border-black/15
+                                      px-4 py-3
+                                      bg-white
+                                      text-dark
+                                      focus:outline-none focus:ring-2 focus:ring-orange
+                                      disabled:opacity-60
+                                    "
+                                  >
+                                    <option value="" disabled>
+                                      Select Nominee
+                                    </option>
+                                    {nominees.map((n) => (
+                                      <option key={n.id} value={n.id}>
+                                        {n.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
                               </div>
 
-                              <div>
-                                <label htmlFor="vote-nominee" className="block text-sm font-medium text-dark mb-2">
-                                  Your Vote
-                                </label>
-                                <select
-                                  id="vote-nominee"
-                                  value={stateFor(expandedCategory.id).selection}
+                              <div className="mt-5 flex items-center gap-4">
+                                <button
+                                  onClick={() => submitVote(expandedCategory.id)}
                                   disabled={
                                     stateFor(expandedCategory.id).isSubmitting ||
-                                    stateFor(expandedCategory.id).hasConfirmed
+                                    stateFor(expandedCategory.id).hasConfirmed ||
+                                    !isValidEmail(stateFor(expandedCategory.id).email) ||
+                                    !stateFor(expandedCategory.id).selection
                                   }
-                                  onChange={(e) => {
-                                    const nextSelection = e.target.value;
-                                    const s = stateFor(expandedCategory.id);
-                                    setStateFor(expandedCategory.id, {
-                                      selection: nextSelection,
-                                      error: '',
-                                      hasConfirmed: s.hasConfirmed ? false : s.hasConfirmed
-                                    });
-                                  }}
                                   className="
-                                    w-full rounded-lg border border-black/15
-                                    px-4 py-3
-                                    bg-white
-                                    text-dark
+                                    bg-orange text-white
+                                    font-sans font-semibold
+                                    px-7 py-3
+                                    rounded-full
+                                    shadow-md
+                                    transition-all duration-300
+                                    disabled:opacity-50 disabled:cursor-not-allowed
                                     focus:outline-none focus:ring-2 focus:ring-orange
-                                    disabled:opacity-60
                                   "
                                 >
-                                  <option value="" disabled>
-                                    Select Nominee
-                                  </option>
-                                  {nominees.map((n) => (
-                                    <option key={n.id} value={n.id}>
-                                      {n.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                            </div>
+                                  {stateFor(expandedCategory.id).isSubmitting ? 'Submitting...' : 'Submit Vote'}
+                                </button>
 
-                            <div className="mt-5 flex items-center gap-4">
+                                <AnimatePresence>
+                                  {stateFor(expandedCategory.id).hasConfirmed && (
+                                    <motion.div
+                                      initial={{ opacity: 0, y: 6 }}
+                                      animate={{ opacity: 1, y: 0 }}
+                                      exit={{ opacity: 0, y: 6 }}
+                                      className="text-dark font-sans font-medium"
+                                    >
+                                      ✅{' '}
+                                      <span className="font-semibold">
+                                        Your vote has been received!{' '}
+                                        <a
+                                          href="https://www.funny-con.com/tickets"
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="font-bold text-orange hover:underline focus:outline-none focus:ring-2 focus:ring-orange rounded"
+                                        >
+                                          Get tickets
+                                        </a>{' '}
+                                        to the awards and{' '}
+                                        <button
+                                          type="button"
+                                          onClick={goNext}
+                                          className="font-bold text-orange hover:underline focus:outline-none focus:ring-2 focus:ring-orange rounded"
+                                        >
+                                          continue voting
+                                        </button>{' '}
+                                        in the other categories.
+                                      </span>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </div>
+
+                              <p className="mt-3 text-xs text-dark/60">
+                                By entering your email, you agree to receive updates about The Funny Awards and FunnyCon.
+                                One click unsubscribe anytime. We&apos;ll never share or sell your data. Voting on
+                                TheFunnys.org is counted towards the Audience Choice. The official award winners are
+                                determined by votes cast by the Funny Academy.
+                              </p>
+
+                              {stateFor(expandedCategory.id).error && (
+                                <p className="mt-3 text-sm text-red-600">
+                                  {stateFor(expandedCategory.id).error}
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          {isVotingClosed && (
+                            <div className="mt-8 md:mt-10 pt-6 border-t border-black/10">
+                              <p className="text-dark font-sans font-medium mb-3">
+                                Voting has closed for this year&apos;s awards.{' '}
+                                <a
+                                  href="https://www.funny-con.com/tickets"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-bold text-orange hover:underline focus:outline-none focus:ring-2 focus:ring-orange rounded"
+                                >
+                                  Get tickets
+                                </a>{' '}
+                                to the awards or subscribe to be notified about this year&apos;s winners!
+                              </p>
+
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+                                <div>
+                                  <label htmlFor="closed-email" className="block text-sm font-medium text-dark mb-2">
+                                    Email
+                                  </label>
+                                  <input
+                                    id="closed-email"
+                                    type="email"
+                                    placeholder="Enter your email"
+                                    value={stateFor(expandedCategory.id).email}
+                                    disabled={stateFor(expandedCategory.id).isSubmitting}
+                                    onChange={(e) => {
+                                      const nextEmail = e.target.value;
+                                      setStateFor(expandedCategory.id, {
+                                        email: nextEmail,
+                                        error: '',
+                                        hasConfirmed: false
+                                      });
+                                    }}
+                                    className="
+                                      w-full rounded-lg border border-black/15
+                                      px-4 py-3
+                                      bg-white
+                                      text-dark
+                                      focus:outline-none focus:ring-2 focus:ring-orange
+                                      disabled:opacity-60
+                                    "
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="mt-5 flex items-center gap-4">
                               <button
-                                onClick={() => submitVote(expandedCategory.id)}
+                                type="button"
+                                onClick={() => submitSubscription(expandedCategory.id)}
                                 disabled={
                                   stateFor(expandedCategory.id).isSubmitting ||
-                                  stateFor(expandedCategory.id).hasConfirmed ||
-                                  !isValidEmail(stateFor(expandedCategory.id).email) ||
-                                  !stateFor(expandedCategory.id).selection
+                                  !isValidEmail(stateFor(expandedCategory.id).email)
                                 }
                                 className="
                                   bg-orange text-white
@@ -848,7 +1037,7 @@ const AwardCategoriesGrid = () => {
                                   focus:outline-none focus:ring-2 focus:ring-orange
                                 "
                               >
-                                {stateFor(expandedCategory.id).isSubmitting ? 'Submitting...' : 'Submit Vote'}
+                                {stateFor(expandedCategory.id).isSubmitting ? 'Submitting...' : 'Subscribe'}
                               </button>
 
                               <AnimatePresence>
@@ -857,45 +1046,120 @@ const AwardCategoriesGrid = () => {
                                     initial={{ opacity: 0, y: 6 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     exit={{ opacity: 0, y: 6 }}
-                                    className="text-dark font-sans font-medium"
+                                    className="mt-4 text-dark font-sans font-medium"
                                   >
-                                    ✅{' '}
-                                    <span className="font-semibold">
-                                      Your vote has been received!{' '}
-                                      <a
-                                        href="https://www.funny-con.com/tickets"
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="font-bold text-orange hover:underline focus:outline-none focus:ring-2 focus:ring-orange rounded"
-                                      >
-                                        Get tickets
-                                      </a>{' '}
-                                      to the awards and{' '}
-                                      <button
-                                        type="button"
-                                        onClick={goNext}
-                                        className="font-bold text-orange hover:underline focus:outline-none focus:ring-2 focus:ring-orange rounded"
-                                      >
-                                        continue voting
-                                      </button>{' '}
-                                      in the other categories.
-                                    </span>
+                                    ✅ You are subscribed for updates from The Funny Awards.
                                   </motion.div>
                                 )}
                               </AnimatePresence>
+
+                              </div>
+
+                              <p className="mt-3 text-xs text-dark/60">
+                                By entering your email, you agree to receive updates about The Funny Awards and FunnyCon.
+                                One click unsubscribe anytime. We&apos;ll never share or sell your data. Voting on
+                                TheFunnys.org is counted towards the Audience Choice. The official award winners are
+                                determined by votes cast by the Funny Academy.
+                              </p>
+
+                              {stateFor(expandedCategory.id).error && (
+                                <p className="mt-3 text-sm text-red-600">
+                                  {stateFor(expandedCategory.id).error}
+                                </p>
+                              )}
+
                             </div>
+                          )}
 
-                            <p className="mt-3 text-xs text-dark/60">
-                              By entering your email, you agree to receive updates about The Funny Awards and FunnyCon.
-                              One click unsubscribe anytime. We&apos;ll never share or sell your data. Voting on
-                              TheFunnys.org is counted towards the Audience Choice. The official award winners are
-                              determined by votes cast by the Funny Academy.
-                            </p>
+                          {isWinnerAnnounced && (
+                            <div className="mt-8 md:mt-10 pt-6 border-t border-black/10">
+                              <p className="text-dark font-sans font-medium mb-3">
+                                Subscribe to The Funny Awards to be the first to receive news about the Funnys and to be notified when voting opens for the next Awards!
+                              </p>
 
-                            {stateFor(expandedCategory.id).error && (
-                              <p className="mt-3 text-sm text-red-600">{stateFor(expandedCategory.id).error}</p>
-                            )}
-                          </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+                                <div>
+                                  <label htmlFor="winner-email" className="block text-sm font-medium text-dark mb-2">
+                                    Email
+                                  </label>
+                                  <input
+                                    id="winner-email"
+                                    type="email"
+                                    placeholder="Enter your email"
+                                    value={stateFor(expandedCategory.id).email}
+                                    disabled={stateFor(expandedCategory.id).isSubmitting}
+                                    onChange={(e) => {
+                                      const nextEmail = e.target.value;
+                                      setStateFor(expandedCategory.id, {
+                                        email: nextEmail,
+                                        error: '',
+                                        hasConfirmed: false
+                                      });
+                                    }}
+                                    className="
+                                      w-full rounded-lg border border-black/15
+                                      px-4 py-3
+                                      bg-white
+                                      text-dark
+                                      focus:outline-none focus:ring-2 focus:ring-orange
+                                      disabled:opacity-60
+                                    "
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="mt-5 flex items-center gap-4">
+                              <button
+                                type="button"
+                                onClick={() => submitSubscription(expandedCategory.id)}
+                                disabled={
+                                  stateFor(expandedCategory.id).isSubmitting ||
+                                  !isValidEmail(stateFor(expandedCategory.id).email)
+                                }
+                                className="
+                                  bg-orange text-white
+                                  font-sans font-semibold
+                                  px-7 py-3
+                                  rounded-full
+                                  shadow-md
+                                  transition-all duration-300
+                                  disabled:opacity-50 disabled:cursor-not-allowed
+                                  focus:outline-none focus:ring-2 focus:ring-orange
+                                "
+                              >
+                                {stateFor(expandedCategory.id).isSubmitting ? 'Submitting...' : 'Subscribe'}
+                              </button>
+
+                              <AnimatePresence>
+                                {stateFor(expandedCategory.id).hasConfirmed && (
+                                  <motion.div
+                                    initial={{ opacity: 0, y: 6 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, y: 6 }}
+                                    className="mt-4 text-dark font-sans font-medium"
+                                  >
+                                    ✅ You are subscribed for updates from The Funny Awards.
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+
+                              </div>
+
+                              <p className="mt-3 text-xs text-dark/60">
+                                By entering your email, you agree to receive updates about The Funny Awards and FunnyCon.
+                                One click unsubscribe anytime. We&apos;ll never share or sell your data. Voting on
+                                TheFunnys.org is counted towards the Audience Choice. The official award winners are
+                                determined by votes cast by the Funny Academy.
+                              </p>
+
+                              {stateFor(expandedCategory.id).error && (
+                                <p className="mt-3 text-sm text-red-600">
+                                  {stateFor(expandedCategory.id).error}
+                                </p>
+                              )}
+
+                            </div>
+                          )}
                         </div>
                       </div>
                     </motion.div>
